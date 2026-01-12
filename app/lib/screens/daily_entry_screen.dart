@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:image_picker/image_picker.dart';
@@ -5,7 +6,7 @@ import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:trale/core/db/app_database.dart';
 import 'package:trale/core/measurementDatabase.dart';
 import 'package:trale/core/measurement.dart';
-import 'package:drift/drift.dart' show Value, OrderingTerm;
+import 'package:drift/drift.dart' show Value, OrderingTerm, InsertMode;
 
 /// Full-screen daily entry form with collapsible sections for weight, photos,
 /// workout, thoughts, and emotional check-ins.
@@ -35,16 +36,21 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
   final TextEditingController _heightController = TextEditingController();
   final TextEditingController _workoutController = TextEditingController();
   final TextEditingController _thoughtsController = TextEditingController();
+  final TextEditingController _emotionalMessageController = TextEditingController();
 
   // Form state
   List<String> _photoPaths = [];
   List<String> _workoutTags = [];
-  Color? _pickedEmotionalColor;
+  Color? _currentEmotionalColor;
+  List<_EmotionalCheckIn> _emotionalCheckIns = [];
 
   // Section expansion state
   final Set<String> _expandedSections = {};
 
   final AppDatabase _db = AppDatabase();
+
+  // Timer for live clock updates
+  Timer? _clockTimer;
 
   @override
   void initState() {
@@ -52,6 +58,11 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
     _selectedDate = widget.initialDate ?? DateTime.now();
     _dateStr = _formatDate(_selectedDate);
     _loadEntryForDate();
+
+    // Start live clock timer
+    _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      setState(() {});
+    });
   }
 
   @override
@@ -60,6 +71,8 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
     _heightController.dispose();
     _workoutController.dispose();
     _thoughtsController.dispose();
+    _emotionalMessageController.dispose();
+    _clockTimer?.cancel();
     super.dispose();
   }
 
@@ -113,21 +126,26 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
           .get();
       _photoPaths = photos.map((photo) => photo.filePath).toList();
 
-      // Load emotional color
+      // Load emotional check-ins
       final emotionalRows = await (_db.select(_db.checkInColor)
             ..where((tbl) => tbl.checkInDate.equals(_dateStr))
             ..orderBy([(tbl) => OrderingTerm.desc(tbl.ts)]))
           .get();
 
-      if (emotionalRows.isNotEmpty) {
-        final colorRgb = emotionalRows.first.colorRgb;
-        _pickedEmotionalColor = Color.fromARGB(
+      _emotionalCheckIns = emotionalRows.map((row) {
+        final colorRgb = row.colorRgb;
+        final color = Color.fromARGB(
           255,
           (colorRgb >> 16) & 0xFF,
           (colorRgb >> 8) & 0xFF,
           colorRgb & 0xFF,
         );
-      }
+        return _EmotionalCheckIn(
+          timestamp: DateTime.fromMillisecondsSinceEpoch(row.ts),
+          color: color,
+          message: row.message ?? '',
+        );
+      }).toList();
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -210,21 +228,7 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
             );
       }
 
-      // Save emotional color if picked
-      if (_pickedEmotionalColor != null) {
-        final colorRgb = (_pickedEmotionalColor!.red << 16) |
-            (_pickedEmotionalColor!.green << 8) |
-            _pickedEmotionalColor!.blue;
-        await _db.into(_db.checkInColor).insertOnConflictUpdate(
-              CheckInColorCompanion.insert(
-                checkInDate: _dateStr,
-                ts: DateTime.now().millisecondsSinceEpoch,
-                colorRgb: colorRgb,
-                message: const Value(null),
-                isImmutable: const Value(true),
-              ),
-            );
-      }
+      // Note: Emotional check-ins are saved separately via _saveEmotionalCheckIn
 
       // Save workout
       if (_workoutController.text.isNotEmpty || _workoutTags.isNotEmpty) {
@@ -238,7 +242,41 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
             );
 
         // Save workout tags
-        // (Tag insertion logic would go here)
+        if (_workoutTags.isNotEmpty) {
+          // Wrap the entire delete-and-insert sequence in a transaction
+          await _db.transaction(() async {
+            // First, delete existing tag links for this check-in
+            await (_db.delete(_db.workoutWorkoutTags)
+                  ..where((tbl) => tbl.checkInDate.equals(_dateStr)))
+                .go();
+
+            // Insert or get tag IDs for each tag
+            for (final tagName in _workoutTags) {
+              // Try to insert the tag, or get existing one
+              final existingTag = await (_db.select(_db.workoutTags)
+                    ..where((tbl) => tbl.tag.equals(tagName)))
+                  .getSingleOrNull();
+
+              int tagId;
+              if (existingTag != null) {
+                tagId = existingTag.id;
+              } else {
+                tagId = await _db.into(_db.workoutTags).insert(
+                      WorkoutTagsCompanion.insert(tag: tagName),
+                    );
+              }
+
+              // Link the tag to this workout
+              await _db.into(_db.workoutWorkoutTags).insert(
+                    WorkoutWorkoutTagsCompanion.insert(
+                      checkInDate: _dateStr,
+                      workoutTagId: tagId,
+                    ),
+                    mode: InsertMode.insertOrIgnore,
+                  );
+            }
+          });
+        }
       }
 
       if (mounted) {
@@ -250,6 +288,62 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error saving entry: $e')),
+      );
+    } finally {
+      setState(() => _isSaving = false);
+    }
+  }
+
+  Future<void> _saveEmotionalCheckIn() async {
+    if (_currentEmotionalColor == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please pick a color')),
+      );
+      return;
+    }
+
+    setState(() => _isSaving = true);
+
+    try {
+      final timestamp = DateTime.now();
+      final colorRgb = (_currentEmotionalColor!.red << 16) |
+          (_currentEmotionalColor!.green << 8) |
+          _currentEmotionalColor!.blue;
+
+      await _db.into(_db.checkInColor).insert(
+            CheckInColorCompanion.insert(
+              checkInDate: _dateStr,
+              ts: timestamp.millisecondsSinceEpoch,
+              colorRgb: colorRgb,
+              message: Value(_emotionalMessageController.text.isEmpty
+                  ? null
+                  : _emotionalMessageController.text),
+              isImmutable: const Value(true),
+            ),
+          );
+
+      // Add to local list
+      setState(() {
+        _emotionalCheckIns.insert(
+          0,
+          _EmotionalCheckIn(
+            timestamp: timestamp,
+            color: _currentEmotionalColor!,
+            message: _emotionalMessageController.text,
+          ),
+        );
+        _currentEmotionalColor = null;
+        _emotionalMessageController.clear();
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Emotional check-in saved!')),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error saving check-in: $e')),
       );
     } finally {
       setState(() => _isSaving = false);
@@ -281,31 +375,6 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
     }
   }
 
-  Future<void> _selectFromGallery() async {
-    if (_photoPaths.length >= 3) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Maximum 3 photos allowed')),
-        );
-      }
-      return;
-    }
-
-    final ImagePicker picker = ImagePicker();
-    final XFile? photo = await picker.pickImage(
-      source: ImageSource.gallery,
-      maxWidth: 1920,
-      maxHeight: 1080,
-      imageQuality: 85,
-    );
-
-    if (photo != null) {
-      setState(() {
-        _photoPaths.add(photo.path);
-      });
-    }
-  }
-
   Future<void> _showAddTagDialog() async {
     final TextEditingController tagController = TextEditingController();
     final result = await showDialog<String>(
@@ -320,6 +389,8 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
           ),
           autofocus: true,
           textCapitalization: TextCapitalization.words,
+          keyboardType: TextInputType.text,
+          textInputAction: TextInputAction.done,
         ),
         actions: [
           TextButton(
@@ -510,28 +581,15 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
               padding: const EdgeInsets.all(16),
               child: Column(
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: photoCount >= 3 || _isEntryImmutable
-                              ? null
-                              : _capturePhoto,
-                          icon: const Icon(Icons.camera_alt),
-                          label: const Text('Camera'),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: photoCount >= 3 || _isEntryImmutable
-                              ? null
-                              : _selectFromGallery,
-                          icon: const Icon(Icons.photo_library),
-                          label: const Text('Gallery'),
-                        ),
-                      ),
-                    ],
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: photoCount >= 3 || _isEntryImmutable
+                          ? null
+                          : _capturePhoto,
+                      icon: const Icon(Icons.camera_alt),
+                      label: const Text('Take Photo'),
+                    ),
                   ),
                   if (photoCount == 0)
                     Padding(
@@ -593,6 +651,8 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
                       alignLabelWithHint: true,
                     ),
                     enabled: !_isEntryImmutable,
+                    keyboardType: TextInputType.multiline,
+                    textInputAction: TextInputAction.newline,
                   ),
                   const SizedBox(height: 16),
                   Text(
@@ -663,6 +723,8 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
                   alignLabelWithHint: true,
                 ),
                 enabled: !_isEntryImmutable,
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
               ),
             ),
         ],
@@ -672,26 +734,19 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
 
   Widget _buildEmotionSection() {
     final bool isExpanded = _expandedSections.contains('emotions');
+    final bool isToday = _selectedDate.year == DateTime.now().year &&
+        _selectedDate.month == DateTime.now().month &&
+        _selectedDate.day == DateTime.now().day;
 
     return Card(
       child: Column(
         children: [
           ListTile(
             leading: const Icon(Icons.palette),
-            title: const Text('Emotional Check-In'),
-            subtitle: !isExpanded && _pickedEmotionalColor != null
-                ? Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 16,
-                        height: 16,
-                        color: _pickedEmotionalColor,
-                      ),
-                      const SizedBox(width: 8),
-                      const Text('Color selected'),
-                    ],
-                  )
+            title: const Text('Emotional Check-Ins'),
+            subtitle: !isExpanded && _emotionalCheckIns.isNotEmpty
+                ? Text(
+                    '${_emotionalCheckIns.length} check-in${_emotionalCheckIns.length != 1 ? 's' : ''} recorded')
                 : null,
             trailing:
                 Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
@@ -703,44 +758,121 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    'Pick a color to represent your emotional state',
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                  const SizedBox(height: 16),
-                  BlockPicker(
-                    pickerColor: _pickedEmotionalColor ?? Colors.blue,
-                    onColorChanged: (Color color) {
-                      setState(() {
-                        _pickedEmotionalColor = color;
-                      });
-                    },
-                  ),
-                  if (_pickedEmotionalColor != null) ...[
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        const Text('Selected:'),
-                        const SizedBox(width: 12),
-                        Container(
-                          width: 40,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            color: _pickedEmotionalColor,
-                            border: Border.all(color: Colors.grey),
-                            borderRadius: BorderRadius.circular(8),
+                  // Add new emotional check-in (only for today)
+                  if (isToday) ...[
+                    Text(
+                      'Add Emotional Check-In',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
                           ),
+                    ),
+                    const SizedBox(height: 12),
+                    // Show current timestamp
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.access_time,
+                            size: 20,
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Live time: ${DateFormat('yyyy-MM-ddTHH:mm:ss').format(DateTime.now())}',
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              fontFamily: 'monospace',
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Pick a color to represent your emotional state',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    const SizedBox(height: 16),
+                    // Circular color wheel only
+                    Center(
+                      child: ColorPicker(
+                        pickerColor: _currentEmotionalColor ?? Colors.blue,
+                        onColorChanged: (Color color) {
+                          setState(() {
+                            _currentEmotionalColor = color;
+                          });
+                        },
+                        paletteType: PaletteType.hueWheel,
+                        enableAlpha: false,
+                        displayThumbColor: true,
+                        pickerAreaHeightPercent: 1.0,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _emotionalMessageController,
+                      maxLines: 3,
+                      maxLength: 500,
+                      keyboardType: TextInputType.multiline,
+                      textInputAction: TextInputAction.newline,
+                      decoration: const InputDecoration(
+                        labelText: 'Message (optional)',
+                        hintText: 'Describe how you\'re feeling...',
+                        border: OutlineInputBorder(),
+                        alignLabelWithHint: true,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: _isSaving ? null : _saveEmotionalCheckIn,
+                        icon: const Icon(Icons.add),
+                        label: const Text('Save Emotional Check-In'),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.all(16),
                         ),
-                        const Spacer(),
-                        TextButton(
-                          onPressed: () {
-                            setState(() {
-                              _pickedEmotionalColor = null;
-                            });
-                          },
-                          child: const Text('Clear'),
+                      ),
+                    ),
+                    if (_emotionalCheckIns.isNotEmpty) ...[
+                      const SizedBox(height: 24),
+                      const Divider(),
+                      const SizedBox(height: 16),
+                    ],
+                  ],
+                  // Show previous emotional check-ins
+                  if (_emotionalCheckIns.isNotEmpty) ...[
+                    Text(
+                      'Previous Check-Ins ${isToday ? 'Today' : 'on This Day'}',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                    ),
+                    const SizedBox(height: 12),
+                    ..._emotionalCheckIns.map((checkIn) {
+                      return _buildEmotionalCheckInCard(checkIn, key: ValueKey(checkIn.timestamp));
+                    }),
+                  ] else if (!isToday) ...[
+                    Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Text(
+                          'No emotional check-ins recorded for this day',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodyMedium
+                              ?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
                         ),
-                      ],
+                      ),
                     ),
                   ],
                 ],
@@ -750,4 +882,94 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
       ),
     );
   }
+
+  Widget _buildEmotionalCheckInCard(_EmotionalCheckIn checkIn, {Key? key}) {
+    final DateTime checkInDate = checkIn.timestamp;
+    final DateTime now = DateTime.now();
+    final bool isToday = checkInDate.year == now.year &&
+                        checkInDate.month == now.month &&
+                        checkInDate.day == now.day;
+    final String formattedTimestamp = isToday
+        ? DateFormat('h:mm a').format(checkInDate)
+        : DateFormat('MMM d, h:mm a').format(checkInDate);
+    return Card(
+      key: key,
+      margin: const EdgeInsets.only(bottom: 12),
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: checkIn.color,
+                    border: Border.all(color: Colors.grey),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Timestamp',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                            ),
+                      ),
+                      Text(
+                        formattedTimestamp,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                              fontFamily: 'monospace',
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            if (checkIn.message.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              const Divider(),
+              const SizedBox(height: 8),
+              Text(
+                'Message',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color:
+                          Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                checkIn.message,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Data class for emotional check-in display
+class _EmotionalCheckIn {
+  final DateTime timestamp;
+  final Color color;
+  final String message;
+
+  _EmotionalCheckIn({
+    required this.timestamp,
+    required this.color,
+    required this.message,
+  });
 }
