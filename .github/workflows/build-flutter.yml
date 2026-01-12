@@ -26,7 +26,7 @@ jobs:
           export FLUTTER_VERSION="$(sed -E -n -e 's/^.*flutter:\ ">=([0-9.]+)"/\1/p' pubspec.yaml)"
           echo "FLUTTER_VERSION=$FLUTTER_VERSION" >> $GITHUB_ENV
       - name: ⚙️ Setup Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@fd55f4c5af5b953cc57a2be44cb082c8f6635e8e # v2.21.0
         with:
           flutter-version: "${{ env.FLUTTER_VERSION }}"
           channel: 'stable'
@@ -34,7 +34,7 @@ jobs:
         id: flutter
       - name: 🔐 Retrieve base64 keystore and decode it to a file
         id: write_file
-        uses: timheuer/base64-to-file@v1.2
+        uses: timheuer/base64-to-file@adaa40c0c581f276132199d4cf60afa07ce60eac # v1.2
         with:
           fileName: "android-keystore.jks"
           fileDir: "${{ github.workspace }}/"
