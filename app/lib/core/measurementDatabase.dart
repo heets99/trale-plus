@@ -106,6 +106,9 @@ class MeasurementDatabase extends MeasurementDatabaseBaseclass {
   AppDatabase? _db;
   AppDatabase get db => _db ??= AppDatabase();
 
+  /// Completer to track when measurements are loaded
+  Completer<void>? _loadCompleter;
+
   /// check if measurement exists
   bool containsMeasurement(Measurement m) {
     final List<bool> isMeasurement = <bool>[
@@ -115,7 +118,14 @@ class MeasurementDatabase extends MeasurementDatabaseBaseclass {
     return isMeasurement.contains(true);
   }
 
-  /// insert Measurements into box
+  /// Triggers a refresh of measurements after data has been persisted elsewhere.
+  /// 
+  /// NOTE: This method does NOT persist the measurement to the database.
+  /// Data persistence should be handled via app_database.dart (Drift) before
+  /// calling this method. This method only triggers a UI refresh by calling
+  /// reinit() to reload measurements from the database and update listeners.
+  /// 
+  /// Returns true to maintain backward compatibility with the existing API.
   bool insertMeasurement(Measurement m) {
     // Data is already persisted via app_database.dart (Drift)
     // This just triggers refresh for charts/stats
@@ -148,27 +158,54 @@ class MeasurementDatabase extends MeasurementDatabaseBaseclass {
   /// re initialize database
   void reinit() {
     _measurements = null;
+    _loadCompleter = null;
 
-    // recalc all
-    init();
+    // Start async load and fire stream when done
+    _initAsync();
 
-    // update interpolation
+    // update interpolation and stats immediately
+    // (they will get updated data when measurements are loaded)
     MeasurementInterpolation().reinit();
     MeasurementStats().reinit();
-
-    // fire stream
-    fireStream();
+    
     TraleNotifier().notify;
   }
 
+  /// Internal async initialization
+  Future<void> _initAsync() async {
+    await init();
+    // fire stream only once after load completes
+    fireStream();
+  }
+
   /// initialize database
-  void init() {
-    // Force load from database
-    measurements;
+  Future<void> init() async {
+    // Wait for measurements to load
+    await _ensureMeasurementsLoaded();
   }
 
   @override
   List<Measurement>? _measurements;
+
+  /// Ensure measurements are loaded, using Completer to prevent duplicate loads
+  Future<void> _ensureMeasurementsLoaded() async {
+    if (_measurements != null) return;
+    
+    // If already loading, wait for that to complete
+    if (_loadCompleter != null) {
+      return _loadCompleter!.future;
+    }
+    
+    // Start a new load
+    _loadCompleter = Completer<void>();
+    try {
+      await _loadMeasurementsFromDatabase();
+      _loadCompleter!.complete();
+    } catch (e) {
+      _loadCompleter!.completeError(e);
+      rethrow;
+    }
+  }
 
   /// Load measurements from Drift database
   Future<void> _loadMeasurementsFromDatabase() async {
@@ -183,22 +220,21 @@ class MeasurementDatabase extends MeasurementDatabaseBaseclass {
               ))
           .toList()
         ..sort((Measurement a, Measurement b) => b.compareTo(a));
-    } catch (e) {
+    } catch (e, stackTrace) {
+      // Log the exception and stack trace so database issues are visible
+      // ignore: avoid_print
+      print('Error loading measurements from database: $e');
+      // ignore: avoid_print
+      print('Stack trace: $stackTrace');
       _measurements = <Measurement>[];
+      rethrow;
     }
   }
 
   /// get sorted measurements
   @override
   List<Measurement> get measurements {
-    if (_measurements != null) return _measurements!;
-    
-    // Synchronously return empty list, but trigger async load
-    _loadMeasurementsFromDatabase().then((_) {
-      // After loading, fire stream to update UI
-      fireStream();
-    });
-    
+    // Return current measurements or empty list if not loaded yet
     return _measurements ?? <Measurement>[];
   }
 

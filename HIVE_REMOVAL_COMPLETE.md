@@ -29,7 +29,9 @@ Instead of completely removing `MeasurementDatabase` (which would require change
 ## Files Modified
 
 ### 1. `app/lib/core/db/app_database.dart`
+
 **Added:**
+
 ```dart
 Future<List<CheckIn>> getAllCheckIns() async {
   return (select(checkIns)..orderBy([(t) => OrderingTerm.desc(t.checkInDate)])).get();
@@ -41,6 +43,7 @@ Future<List<CheckIn>> getAllCheckIns() async {
 ---
 
 ### 2. `app/lib/core/measurementDatabase.dart`
+
 **Changed:**
 - Updated class documentation: ~~"stored in hive"~~ → "stored in SQLite via Drift"
 - Added `AppDatabase` instance (`_db` field + `db` getter)
@@ -50,6 +53,7 @@ Future<List<CheckIn>> getAllCheckIns() async {
 - Updated CRUD methods to trigger refresh (data persistence handled by Drift)
 
 **Key Implementation:**
+
 ```dart
 Future<void> _loadMeasurementsFromDatabase() async {
   try {
@@ -74,14 +78,16 @@ Future<void> _loadMeasurementsFromDatabase() async {
 ## Architecture
 
 ### Before (Hive-based)
-```
+
+```text
 [MeasurementDatabase] → [Hive Box] → [Local Storage]
          ↓
 [Charts/Stats Widgets]
 ```
 
 ### After (Bridge Pattern)
-```
+
+```text
 [daily_entry_screen] → [app_database.dart (Drift)] → [SQLite]
                               ↑
 [MeasurementDatabase (Bridge)] 
