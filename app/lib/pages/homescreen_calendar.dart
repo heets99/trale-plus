@@ -94,9 +94,9 @@ class _HomeScreenCalendarPageState extends State<HomeScreenCalendarPage> {
                       // In tests we may provide initialEvents and skip opening the screen
                       if (widget.initialEvents == null) {
                         // Open daily entry screen for date
-                        final result = await Navigator.push(
+                        final bool? result = await Navigator.push<bool?>(
                           context,
-                          MaterialPageRoute(
+                          MaterialPageRoute<bool>(
                             builder: (BuildContext context) => DailyEntryScreen(
                               initialDate: selectedDay,
                             ),

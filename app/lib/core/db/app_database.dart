@@ -4,7 +4,7 @@ import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:sqlite3/src/ffi/api.dart';
+import 'package:sqlite3/sqlite3.dart';
 
 part 'app_database.g.dart';
 
@@ -19,7 +19,7 @@ class CheckIns extends Table {
   TextColumn get notes => text().nullable()();
 
   @override
-  Set<Column> get primaryKey => <Column<Object>>{checkInDate};
+  Set<Column<Object>> get primaryKey => <Column<Object>>{checkInDate};
 }
 
 class WorkoutTags extends Table {
@@ -41,7 +41,7 @@ class Workouts extends Table {
   TextColumn get description => text().nullable()();
 
   @override
-  Set<Column> get primaryKey => <Column<Object>>{checkInDate};
+  Set<Column<Object>> get primaryKey => <Column<Object>>{checkInDate};
 
   @override
   List<String> get customConstraints => <String>[
@@ -57,7 +57,7 @@ class WorkoutWorkoutTags extends Table {
   IntColumn get workoutTagId => integer()();
 
   @override
-  Set<Column> get primaryKey => <Column<Object>>{checkInDate, workoutTagId};
+  Set<Column<Object>> get primaryKey => <Column<Object>>{checkInDate, workoutTagId};
 
   @override
   List<String> get customConstraints => <String>[
@@ -77,7 +77,7 @@ class CheckInColor extends Table {
   BoolColumn get isImmutable => boolean().withDefault(const Constant(false))();
 
   @override
-  Set<Column> get primaryKey => <Column<Object>>{checkInDate, ts};
+  Set<Column<Object>> get primaryKey => <Column<Object>>{checkInDate, ts};
 
   @override
   List<String> get customConstraints => <String>[

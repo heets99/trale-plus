@@ -234,8 +234,6 @@ Future<bool> showAddCheckInDialog({
                         ? null
                         : () async {
                             // Save check-in and related records
-                            final String dateStr =
-                                "${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}";
 
                             // Prevent saving if check-in is immutable
                             final bool mutable = await db.isCheckInMutable(dateStr);
@@ -315,7 +313,7 @@ Future<bool> showAddCheckInDialog({
 }
 
 class _PhotoItem {
-  _PhotoItem({required this.path});
+  _PhotoItem({required this.path, this.nsfw = false});
 
   String path;
   bool nsfw;
