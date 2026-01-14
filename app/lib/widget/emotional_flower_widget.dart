@@ -1,7 +1,6 @@
 import 'dart:math' as math;
 
-import 'package:drift/src/dsl/dsl.dart';
-import 'package:drift/src/runtime/query_builder/query_builder.dart';
+import 'package:drift/drift.dart' show Expression, OrderingTerm, OrderClauseGenerator;
 import 'package:flutter/material.dart';
 
 import '../core/db/app_database.dart';

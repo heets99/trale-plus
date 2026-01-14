@@ -1,8 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:drift/drift.dart' show Value, OrderingTerm, InsertMode;
-import 'package:drift/src/runtime/query_builder/query_builder.dart';
+import 'package:drift/drift.dart' show Value, OrderingTerm, InsertMode, OrderClauseGenerator;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
@@ -1235,7 +1234,7 @@ class _EmotionalCheckIn {
 }
 
 /// Data class for photo with NSFW state
-class _PhotoData { // Track if photo is newly added
+class _PhotoData {
 
   _PhotoData({
     this.id,
@@ -1246,6 +1245,7 @@ class _PhotoData { // Track if photo is newly added
   final int? id; // Database ID for existing photos
   final String path;
   final bool isNsfw;
+  // Track if photo is newly added
   final bool isNew;
 
   _PhotoData copyWith({
@@ -1265,15 +1265,15 @@ class _PhotoData { // Track if photo is newly added
 
 /// Full-screen photo viewer
 class _PhotoViewerScreen extends StatefulWidget {
+  final List<_PhotoData> photos;
+  final int initialIndex;
+  final Function(int) onDelete;
 
   const _PhotoViewerScreen({
     required this.photos,
     required this.initialIndex,
     required this.onDelete,
   });
-  final List<_PhotoData> photos;
-  final int initialIndex;
-  final Function(int) onDelete;
 
   @override
   State<_PhotoViewerScreen> createState() => _PhotoViewerScreenState();

@@ -3,16 +3,16 @@ import 'package:flutter_test/flutter_test.dart' hide find;
 
 void main() {
   group('Daily Entry Screen Integration Tests', () {
-    late FlutterDriver driver;
+    FlutterDriver? driver;
 
     setUpAll(() async {
       driver = await FlutterDriver.connect();
     });
 
     tearDownAll(() async {
-      await driver.close();
-        });
-
+      if (driver != null) {
+        await driver.close();
+      }
     test('should save a daily check-in successfully', () async {
       // Wait for the app to settle
       await driver.waitUntilNoTransientCallbacks();
