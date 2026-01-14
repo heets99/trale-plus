@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
@@ -11,11 +13,7 @@ import 'package:drift/drift.dart' show Value, OrderingTerm, InsertMode;
 /// Full-screen daily entry form with collapsible sections for weight, photos,
 /// workout, thoughts, and emotional check-ins.
 class DailyEntryScreen extends StatefulWidget {
-  const DailyEntryScreen({
-    super.key,
-    this.initialDate,
-    this.existingDate,
-  });
+  const DailyEntryScreen({super.key, this.initialDate, this.existingDate});
 
   final DateTime? initialDate;
   final String? existingDate; // ISO format YYYY-MM-DD
@@ -36,13 +34,18 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
   final TextEditingController _heightController = TextEditingController();
   final TextEditingController _workoutController = TextEditingController();
   final TextEditingController _thoughtsController = TextEditingController();
-  final TextEditingController _emotionalMessageController = TextEditingController();
+  final TextEditingController _emotionalMessageController =
+      TextEditingController();
 
   // Form state
-  List<String> _photoPaths = [];
+  List<_PhotoData> _photos = [];
   List<String> _workoutTags = [];
   Color? _currentEmotionalColor;
   List<_EmotionalCheckIn> _emotionalCheckIns = [];
+
+  // Track changes to existing photos
+  final List<int> _deletedPhotoIds = [];
+  final Map<int, bool> _nsfwChanges = {};
 
   // Section expansion state
   final Set<String> _expandedSections = {};
@@ -89,9 +92,9 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
       _isEntryImmutable = !mutable;
 
       // Load check-in data
-      final checkIn = await (_db.select(_db.checkIns)
-            ..where((tbl) => tbl.date.equals(_dateStr)))
-          .getSingleOrNull();
+      final checkIn = await (_db.select(
+        _db.checkIns,
+      )..where((tbl) => tbl.checkInDate.equals(_dateStr))).getSingleOrNull();
 
       if (checkIn != null) {
         _weightController.text = checkIn.weight?.toString() ?? '';
@@ -100,37 +103,46 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
       }
 
       // Load workout data
-      final workout = await (_db.select(_db.workouts)
-            ..where((tbl) => tbl.checkInDate.equals(_dateStr)))
-          .getSingleOrNull();
+      final workout = await (_db.select(
+        _db.workouts,
+      )..where((tbl) => tbl.checkInDate.equals(_dateStr))).getSingleOrNull();
 
       if (workout != null) {
         _workoutController.text = workout.description ?? '';
         // Load workout tags
-        final tagLinks = await (_db.select(_db.workoutWorkoutTags)
-              ..where((tbl) => tbl.checkInDate.equals(_dateStr)))
-            .get();
+        final tagLinks = await (_db.select(
+          _db.workoutWorkoutTags,
+        )..where((tbl) => tbl.checkInDate.equals(_dateStr))).get();
         final tagIds = tagLinks.map((link) => link.workoutTagId).toList();
         if (tagIds.isNotEmpty) {
-          final tags = await (_db.select(_db.workoutTags)
-                ..where((tbl) => tbl.id.isIn(tagIds)))
-              .get();
+          final tags = await (_db.select(
+            _db.workoutTags,
+          )..where((tbl) => tbl.id.isIn(tagIds))).get();
           _workoutTags = tags.map((tag) => tag.tag).toList();
         }
       }
 
       // Load photos
-      final photos = await (_db.select(_db.checkInPhoto)
-            ..where((tbl) => tbl.checkInDate.equals(_dateStr))
-            ..orderBy([(tbl) => OrderingTerm.asc(tbl.ts)]))
-          .get();
-      _photoPaths = photos.map((photo) => photo.filePath).toList();
+      final photos =
+          await (_db.select(_db.checkInPhoto)
+                ..where((tbl) => tbl.checkInDate.equals(_dateStr))
+                ..orderBy([(tbl) => OrderingTerm.asc(tbl.ts)]))
+              .get();
+      _photos = photos
+          .map((photo) => _PhotoData(
+                id: photo.id,
+                path: photo.filePath,
+                isNsfw: photo.fw,
+                isNew: false, // Existing photos are not new
+              ))
+          .toList();
 
       // Load emotional check-ins
-      final emotionalRows = await (_db.select(_db.checkInColor)
-            ..where((tbl) => tbl.checkInDate.equals(_dateStr))
-            ..orderBy([(tbl) => OrderingTerm.desc(tbl.ts)]))
-          .get();
+      final emotionalRows =
+          await (_db.select(_db.checkInColor)
+                ..where((tbl) => tbl.checkInDate.equals(_dateStr))
+                ..orderBy([(tbl) => OrderingTerm.desc(tbl.ts)]))
+              .get();
 
       _emotionalCheckIns = emotionalRows.map((row) {
         final colorRgb = row.colorRgb;
@@ -179,7 +191,9 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
   }
 
   Future<void> _saveEntry() async {
+    if (kDebugMode) debugPrint('[DEBUG] _saveEntry called');
     if (_isEntryImmutable) {
+      if (kDebugMode) debugPrint('[DEBUG] Entry is immutable, returning');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('This entry is immutable and cannot be modified.'),
@@ -191,21 +205,27 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
     setState(() => _isSaving = true);
 
     try {
+      if (kDebugMode) debugPrint('[DEBUG] Saving check-in with date: $_dateStr');
       // Save check-in
       final weight = double.tryParse(_weightController.text);
       final height = double.tryParse(_heightController.text);
+      if (kDebugMode) debugPrint('[DEBUG] Weight: $weight, Height: $height');
 
-      await _db.into(_db.checkIns).insertOnConflictUpdate(
+      await _db
+          .into(_db.checkIns)
+          .insertOnConflictUpdate(
             CheckInsCompanion.insert(
-              date: _dateStr,
+              checkInDate: _dateStr,
               weight: Value(weight),
               height: Value(height),
-              notes: Value(_thoughtsController.text.isEmpty
-                  ? null
-                  : _thoughtsController.text),
+              notes: Value(
+                _thoughtsController.text.isEmpty
+                    ? null
+                    : _thoughtsController.text,
+              ),
             ),
           );
-
+      if (kDebugMode) debugPrint('[DEBUG] Check-in saved successfully');
       // Sync with legacy MeasurementDatabase for charts
       if (weight != null) {
         final m = Measurement(
@@ -216,14 +236,30 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
         await MeasurementDatabase().insertMeasurement(m);
       }
 
-      // Save photos
-      for (final photoPath in _photoPaths) {
-        await _db.into(_db.checkInPhoto).insert(
+      // Handle photo deletions
+      for (final photoId in _deletedPhotoIds) {
+        await (_db.delete(_db.checkInPhoto)
+              ..where((tbl) => tbl.id.equals(photoId)))
+            .go();
+      }
+
+      // Handle NSFW changes for existing photos
+      for (final entry in _nsfwChanges.entries) {
+        await (_db.update(_db.checkInPhoto)
+              ..where((tbl) => tbl.id.equals(entry.key)))
+            .write(CheckInPhotoCompanion(fw: Value(entry.value)));
+      }
+
+      // Save only new photos (not already in database)
+      for (final photo in _photos.where((p) => p.isNew)) {
+        await _db
+            .into(_db.checkInPhoto)
+            .insert(
               CheckInPhotoCompanion.insert(
                 checkInDate: _dateStr,
-                filePath: photoPath,
+                filePath: photo.path,
                 ts: DateTime.now().millisecondsSinceEpoch,
-                fw: const Value(false),
+                fw: Value(photo.isNsfw),
               ),
             );
       }
@@ -232,12 +268,16 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
 
       // Save workout
       if (_workoutController.text.isNotEmpty || _workoutTags.isNotEmpty) {
-        await _db.into(_db.workouts).insertOnConflictUpdate(
+        await _db
+            .into(_db.workouts)
+            .insertOnConflictUpdate(
               WorkoutsCompanion.insert(
                 checkInDate: _dateStr,
-                description: Value(_workoutController.text.isEmpty
-                    ? null
-                    : _workoutController.text),
+                description: Value(
+                  _workoutController.text.isEmpty
+                      ? null
+                      : _workoutController.text,
+                ),
               ),
             );
 
@@ -246,28 +286,30 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
           // Wrap the entire delete-and-insert sequence in a transaction
           await _db.transaction(() async {
             // First, delete existing tag links for this check-in
-            await (_db.delete(_db.workoutWorkoutTags)
-                  ..where((tbl) => tbl.checkInDate.equals(_dateStr)))
-                .go();
+            await (_db.delete(
+              _db.workoutWorkoutTags,
+            )..where((tbl) => tbl.checkInDate.equals(_dateStr))).go();
 
             // Insert or get tag IDs for each tag
             for (final tagName in _workoutTags) {
               // Try to insert the tag, or get existing one
-              final existingTag = await (_db.select(_db.workoutTags)
-                    ..where((tbl) => tbl.tag.equals(tagName)))
-                  .getSingleOrNull();
+              final existingTag = await (_db.select(
+                _db.workoutTags,
+              )..where((tbl) => tbl.tag.equals(tagName))).getSingleOrNull();
 
               int tagId;
               if (existingTag != null) {
                 tagId = existingTag.id;
               } else {
-                tagId = await _db.into(_db.workoutTags).insert(
-                      WorkoutTagsCompanion.insert(tag: tagName),
-                    );
+                tagId = await _db
+                    .into(_db.workoutTags)
+                    .insert(WorkoutTagsCompanion.insert(tag: tagName));
               }
 
               // Link the tag to this workout
-              await _db.into(_db.workoutWorkoutTags).insert(
+              await _db
+                  .into(_db.workoutWorkoutTags)
+                  .insert(
                     WorkoutWorkoutTagsCompanion.insert(
                       checkInDate: _dateStr,
                       workoutTagId: tagId,
@@ -279,15 +321,22 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
         }
       }
 
+      // Clear tracking lists after successful save
+      _deletedPhotoIds.clear();
+      _nsfwChanges.clear();
+
       if (mounted) {
+        if (kDebugMode) debugPrint('[DEBUG] Save completed successfully, showing snackbar');
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Entry saved successfully!')),
         );
         Navigator.pop(context, true);
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      if (kDebugMode) debugPrint('[DEBUG] Error saving entry: $e');
+      if (kDebugMode) debugPrint('[DEBUG] Stack trace: $stackTrace');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error saving entry: $e')),
+        const SnackBar(content: Text('Unable to save entry, please try again')),
       );
     } finally {
       setState(() => _isSaving = false);
@@ -296,28 +345,49 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
 
   Future<void> _saveEmotionalCheckIn() async {
     if (_currentEmotionalColor == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please pick a color')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Please pick a color')));
       return;
     }
 
     setState(() => _isSaving = true);
 
     try {
+      // Ensure check_in record exists (FK constraint requirement)
+      final existingCheckIn = await _db.getCheckInByDate(_dateStr);
+      if (existingCheckIn == null) {
+        // Create minimal check_in record
+        await _db
+            .into(_db.checkIns)
+            .insert(
+              CheckInsCompanion.insert(
+                checkInDate: _dateStr,
+                weight: const Value(null),
+                height: const Value(null),
+                notes: const Value(null),
+              ),
+            );
+      }
+
       final timestamp = DateTime.now();
-      final colorRgb = (_currentEmotionalColor!.red << 16) |
+      final colorRgb =
+          (_currentEmotionalColor!.red << 16) |
           (_currentEmotionalColor!.green << 8) |
           _currentEmotionalColor!.blue;
 
-      await _db.into(_db.checkInColor).insert(
+      await _db
+          .into(_db.checkInColor)
+          .insert(
             CheckInColorCompanion.insert(
               checkInDate: _dateStr,
               ts: timestamp.millisecondsSinceEpoch,
               colorRgb: colorRgb,
-              message: Value(_emotionalMessageController.text.isEmpty
-                  ? null
-                  : _emotionalMessageController.text),
+              message: Value(
+                _emotionalMessageController.text.isEmpty
+                    ? null
+                    : _emotionalMessageController.text,
+              ),
               isImmutable: const Value(true),
             ),
           );
@@ -342,16 +412,16 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
         );
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error saving check-in: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error saving check-in: $e')));
     } finally {
       setState(() => _isSaving = false);
     }
   }
 
   Future<void> _capturePhoto() async {
-    if (_photoPaths.length >= 3) {
+    if (_photos.length >= 3) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Maximum 3 photos allowed')),
@@ -370,27 +440,101 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
 
     if (photo != null) {
       setState(() {
-        _photoPaths.add(photo.path);
+        _photos.add(
+          _PhotoData(
+            path: photo.path,
+            isNsfw: true, // Default to NSFW for safety
+            isNew: true, // Mark as new photo
+          ),
+        );
       });
     }
   }
 
+  void _deletePhoto(int index) {
+    final photo = _photos[index];
+    if (!photo.isNew && photo.id != null) {
+      // Track deletion of existing photo
+      _deletedPhotoIds.add(photo.id!);
+    }
+    setState(() {
+      _photos.removeAt(index);
+    });
+  }
+
+  void _togglePhotoNsfw(int index) {
+    final photo = _photos[index];
+    final newNsfw = !photo.isNsfw;
+    
+    if (!photo.isNew && photo.id != null) {
+      // Track NSFW change for existing photo
+      _nsfwChanges[photo.id!] = newNsfw;
+    }
+    
+    setState(() {
+      _photos[index] = photo.copyWith(isNsfw: newNsfw);
+    });
+  }
+
+  void _openPhotoViewer(int index) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => _PhotoViewerScreen(
+          photos: _photos,
+          initialIndex: index,
+          onDelete: _deletePhoto,
+        ),
+      ),
+    );
+  }
+
   Future<void> _showAddTagDialog() async {
     final TextEditingController tagController = TextEditingController();
+
+    // Load all available tags from database
+    final allTags = await (_db.select(_db.workoutTags)).get();
+    final availableTags = allTags.map((tag) => tag.tag).toList();
+
     final result = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Add Workout Tag'),
-        content: TextField(
-          controller: tagController,
-          decoration: const InputDecoration(
-            labelText: 'Tag name',
-            hintText: 'e.g., Cardio, Strength, Yoga',
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Show pre-installed tags as selectable chips
+              if (availableTags.isNotEmpty) ...[
+                const Text('Choose from existing tags:'),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: availableTags.map((tag) => ActionChip(
+                    label: Text(tag),
+                    onPressed: () => Navigator.pop(context, tag),
+                  )).toList(),
+                ),
+                const Divider(height: 24),
+              ],
+              // Allow creating new tags
+              const Text('Or create a new tag:'),
+              const SizedBox(height: 8),
+              TextField(
+                controller: tagController,
+                decoration: const InputDecoration(
+                  labelText: 'Tag name',
+                  hintText: 'e.g., Cardio, Strength, Yoga',
+                ),
+                autofocus: true,
+                textCapitalization: TextCapitalization.words,
+                keyboardType: TextInputType.text,
+                textInputAction: TextInputAction.done,
+              ),
+            ],
           ),
-          autofocus: true,
-          textCapitalization: TextCapitalization.words,
-          keyboardType: TextInputType.text,
-          textInputAction: TextInputAction.done,
         ),
         actions: [
           TextButton(
@@ -398,9 +542,21 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () {
+            onPressed: () async {
               final tag = tagController.text.trim();
               if (tag.isNotEmpty) {
+                // Check if tag already exists
+                final existingTags = await (_db.select(_db.workoutTags)
+                  ..where((tbl) => tbl.tag.equals(tag))).get();
+                
+                // If tag doesn't exist, save it to database
+                if (existingTags.isEmpty) {
+                  await _db.into(_db.workoutTags).insert(
+                    WorkoutTagsCompanion.insert(tag: tag),
+                  );
+                }
+                
+                if (!mounted) return;
                 Navigator.pop(context, tag);
               }
             },
@@ -422,9 +578,7 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     return Scaffold(
@@ -448,8 +602,8 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
             child: Text(
               DateFormat('EEEE, MMMM d, yyyy').format(_selectedDate),
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onPrimaryContainer,
-                  ),
+                color: Theme.of(context).colorScheme.onPrimaryContainer,
+              ),
               textAlign: TextAlign.center,
             ),
           ),
@@ -483,7 +637,7 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
                 child: CircularProgressIndicator(strokeWidth: 2),
               )
             : const Icon(Icons.save),
-        label: const Text('Save Entry'),
+        label: const Text('Save'),
       ),
     );
   }
@@ -511,8 +665,7 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
             leading: const Icon(Icons.monitor_weight),
             title: const Text('Weight & Height'),
             subtitle: summary.isNotEmpty ? Text(summary) : null,
-            trailing:
-                Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
+            trailing: Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
             onTap: () => _toggleSection('weight'),
           ),
           if (isExpanded)
@@ -554,7 +707,7 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
 
   Widget _buildPhotoSection() {
     final bool isExpanded = _expandedSections.contains('photos');
-    final int photoCount = _photoPaths.length;
+    final int photoCount = _photos.length;
 
     return Card(
       child: Column(
@@ -568,8 +721,10 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text('$photoCount/3',
-                    style: Theme.of(context).textTheme.bodySmall),
+                Text(
+                  '$photoCount/3',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
                 const SizedBox(width: 8),
                 Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
               ],
@@ -591,7 +746,24 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
                       label: const Text('Take Photo'),
                     ),
                   ),
-                  if (photoCount == 0)
+                  if (photoCount > 0) ...[
+                    const SizedBox(height: 16),
+                    GridView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 3,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                            childAspectRatio: 0.75,
+                          ),
+                      itemCount: photoCount,
+                      itemBuilder: (context, index) {
+                        return _buildPhotoThumbnail(index);
+                      },
+                    ),
+                  ] else
                     Padding(
                       padding: const EdgeInsets.only(top: 16),
                       child: Text(
@@ -607,10 +779,85 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
     );
   }
 
+  Widget _buildPhotoThumbnail(int index) {
+    final photo = _photos[index];
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Expanded(
+          child: GestureDetector(
+            onTap: () => _openPhotoViewer(index),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.file(
+                    File(photo.path),
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) {
+                      return Container(
+                        color: Colors.grey[300],
+                        child: const Icon(Icons.error),
+                      );
+                    },
+                  ),
+                ),
+                if (!_isEntryImmutable)
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: IconButton(
+                        iconSize: 16,
+                        padding: const EdgeInsets.all(4),
+                        constraints: const BoxConstraints(
+                          minWidth: 28,
+                          minHeight: 28,
+                        ),
+                        icon: const Icon(Icons.close, color: Colors.white),
+                        onPressed: () => _deletePhoto(index),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Checkbox(
+              value: photo.isNsfw,
+              onChanged: _isEntryImmutable
+                  ? null
+                  : (value) => _togglePhotoNsfw(index),
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              visualDensity: VisualDensity.compact,
+            ),
+            Expanded(
+              child: Text(
+                'NSFW',
+                style: Theme.of(context).textTheme.bodySmall,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
   Widget _buildWorkoutSection() {
     final bool isExpanded = _expandedSections.contains('workout');
-    final bool hasContent = _workoutController.text.isNotEmpty ||
-        _workoutTags.isNotEmpty;
+    final bool hasContent =
+        _workoutController.text.isNotEmpty || _workoutTags.isNotEmpty;
 
     String summary = '';
     if (!isExpanded && hasContent) {
@@ -619,7 +866,8 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
             ? '${_workoutController.text.substring(0, 50)}...'
             : _workoutController.text;
       } else if (_workoutTags.isNotEmpty) {
-        summary = '${_workoutTags.length} tag${_workoutTags.length > 1 ? 's' : ''}';
+        summary =
+            '${_workoutTags.length} tag${_workoutTags.length > 1 ? 's' : ''}';
       }
     }
 
@@ -630,8 +878,7 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
             leading: const Icon(Icons.fitness_center),
             title: const Text('Workout'),
             subtitle: summary.isNotEmpty ? Text(summary) : null,
-            trailing:
-                Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
+            trailing: Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
             onTap: () => _toggleSection('workout'),
           ),
           if (isExpanded)
@@ -655,23 +902,22 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
                     textInputAction: TextInputAction.newline,
                   ),
                   const SizedBox(height: 16),
-                  Text(
-                    'Tags',
-                    style: Theme.of(context).textTheme.titleSmall,
-                  ),
+                  Text('Tags', style: Theme.of(context).textTheme.titleSmall),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      ..._workoutTags.map((tag) => Chip(
-                            label: Text(tag),
-                            onDeleted: _isEntryImmutable
-                                ? null
-                                : () {
-                                    setState(() => _workoutTags.remove(tag));
-                                  },
-                          )),
+                      ..._workoutTags.map(
+                        (tag) => Chip(
+                          label: Text(tag),
+                          onDeleted: _isEntryImmutable
+                              ? null
+                              : () {
+                                  setState(() => _workoutTags.remove(tag));
+                                },
+                        ),
+                      ),
                       if (!_isEntryImmutable)
                         ActionChip(
                           label: const Text('+ Add Tag'),
@@ -705,8 +951,7 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
             leading: const Icon(Icons.edit_note),
             title: const Text('Thoughts'),
             subtitle: summary.isNotEmpty ? Text(summary) : null,
-            trailing:
-                Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
+            trailing: Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
             onTap: () => _toggleSection('thoughts'),
           ),
           if (isExpanded)
@@ -734,7 +979,8 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
 
   Widget _buildEmotionSection() {
     final bool isExpanded = _expandedSections.contains('emotions');
-    final bool isToday = _selectedDate.year == DateTime.now().year &&
+    final bool isToday =
+        _selectedDate.year == DateTime.now().year &&
         _selectedDate.month == DateTime.now().month &&
         _selectedDate.day == DateTime.now().day;
 
@@ -746,10 +992,10 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
             title: const Text('Emotional Check-Ins'),
             subtitle: !isExpanded && _emotionalCheckIns.isNotEmpty
                 ? Text(
-                    '${_emotionalCheckIns.length} check-in${_emotionalCheckIns.length != 1 ? 's' : ''} recorded')
+                    '${_emotionalCheckIns.length} check-in${_emotionalCheckIns.length != 1 ? 's' : ''} recorded',
+                  )
                 : null,
-            trailing:
-                Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
+            trailing: Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
             onTap: () => _toggleSection('emotions'),
           ),
           if (isExpanded)
@@ -763,15 +1009,17 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
                     Text(
                       'Add Emotional Check-In',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                     const SizedBox(height: 12),
                     // Show current timestamp
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.surfaceContainerHighest,
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Row(
@@ -779,38 +1027,49 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
                           Icon(
                             Icons.access_time,
                             size: 20,
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurfaceVariant,
                           ),
                           const SizedBox(width: 8),
                           Text(
                             'Live time: ${DateFormat('yyyy-MM-ddTHH:mm:ss').format(DateTime.now())}',
-                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              fontFamily: 'monospace',
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
-                            ),
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(
+                                  fontFamily: 'monospace',
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
                           ),
                         ],
                       ),
                     ),
                     const SizedBox(height: 16),
                     Text(
-                      'Pick a color to represent your emotional state',
+                      'What color do you feel like right now?',
                       style: Theme.of(context).textTheme.bodyMedium,
                     ),
                     const SizedBox(height: 16),
                     // Circular color wheel only
                     Center(
-                      child: ColorPicker(
-                        pickerColor: _currentEmotionalColor ?? Colors.blue,
-                        onColorChanged: (Color color) {
-                          setState(() {
-                            _currentEmotionalColor = color;
-                          });
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final size = constraints.maxWidth * 0.8; // 80% of available width
+                          return SizedBox(
+                            width: size,
+                            height: size,
+                            child: ColorPickerArea(
+                              HSVColor.fromColor(_currentEmotionalColor ?? Colors.white),
+                              (HSVColor hsvColor) {
+                                setState(() {
+                                  _currentEmotionalColor = hsvColor.toColor();
+                                });
+                              },
+                              PaletteType.hueWheel,
+                            ),
+                          );
                         },
-                        paletteType: PaletteType.hueWheel,
-                        enableAlpha: false,
-                        displayThumbColor: true,
-                        pickerAreaHeightPercent: 1.0,
                       ),
                     ),
                     const SizedBox(height: 16),
@@ -850,12 +1109,15 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
                     Text(
                       'Previous Check-Ins ${isToday ? 'Today' : 'on This Day'}',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                     const SizedBox(height: 12),
                     ..._emotionalCheckIns.map((checkIn) {
-                      return _buildEmotionalCheckInCard(checkIn, key: ValueKey(checkIn.timestamp));
+                      return _buildEmotionalCheckInCard(
+                        checkIn,
+                        key: ValueKey(checkIn.timestamp),
+                      );
                     }),
                   ] else if (!isToday) ...[
                     Center(
@@ -863,13 +1125,11 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
                         padding: const EdgeInsets.all(16.0),
                         child: Text(
                           'No emotional check-ins recorded for this day',
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodyMedium
+                          style: Theme.of(context).textTheme.bodyMedium
                               ?.copyWith(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
                               ),
                         ),
                       ),
@@ -886,9 +1146,10 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
   Widget _buildEmotionalCheckInCard(_EmotionalCheckIn checkIn, {Key? key}) {
     final DateTime checkInDate = checkIn.timestamp;
     final DateTime now = DateTime.now();
-    final bool isToday = checkInDate.year == now.year &&
-                        checkInDate.month == now.month &&
-                        checkInDate.day == now.day;
+    final bool isToday =
+        checkInDate.year == now.year &&
+        checkInDate.month == now.month &&
+        checkInDate.day == now.day;
     final String formattedTimestamp = isToday
         ? DateFormat('h:mm a').format(checkInDate)
         : DateFormat('MMM d, h:mm a').format(checkInDate);
@@ -920,17 +1181,15 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
                       Text(
                         'Timestamp',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                       ),
                       Text(
                         formattedTimestamp,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              fontFamily: 'monospace',
-                            ),
+                          fontWeight: FontWeight.bold,
+                          fontFamily: 'monospace',
+                        ),
                       ),
                     ],
                   ),
@@ -944,9 +1203,8 @@ class _DailyEntryScreenState extends State<DailyEntryScreen> {
               Text(
                 'Message',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color:
-                          Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
               const SizedBox(height: 4),
               Text(
@@ -972,4 +1230,133 @@ class _EmotionalCheckIn {
     required this.color,
     required this.message,
   });
+}
+
+/// Data class for photo with NSFW state
+class _PhotoData {
+  final int? id; // Database ID for existing photos
+  final String path;
+  final bool isNsfw;
+  final bool isNew; // Track if photo is newly added
+
+  _PhotoData({
+    this.id,
+    required this.path,
+    required this.isNsfw,
+    this.isNew = false,
+  });
+
+  _PhotoData copyWith({
+    int? id,
+    String? path,
+    bool? isNsfw,
+    bool? isNew,
+  }) {
+    return _PhotoData(
+      id: id ?? this.id,
+      path: path ?? this.path,
+      isNsfw: isNsfw ?? this.isNsfw,
+      isNew: isNew ?? this.isNew,
+    );
+  }
+}
+
+/// Full-screen photo viewer
+class _PhotoViewerScreen extends StatefulWidget {
+  final List<_PhotoData> photos;
+  final int initialIndex;
+  final Function(int) onDelete;
+
+  const _PhotoViewerScreen({
+    required this.photos,
+    required this.initialIndex,
+    required this.onDelete,
+  });
+
+  @override
+  State<_PhotoViewerScreen> createState() => _PhotoViewerScreenState();
+}
+
+class _PhotoViewerScreenState extends State<_PhotoViewerScreen> {
+  late PageController _pageController;
+  late int _currentIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: widget.initialIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: Text('Photo ${_currentIndex + 1} of ${widget.photos.length}'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.delete),
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (BuildContext context) {
+                  return AlertDialog(
+                    title: const Text('Delete photo?'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text('Cancel'),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          widget.onDelete(_currentIndex);
+                          Navigator.of(context).pop(); // Dismiss dialog
+                          Navigator.of(context).pop(); // Close viewer
+                        },
+                        child: const Text('Delete'),
+                      ),
+                    ],
+                  );
+                },
+              );
+            },
+          ),
+        ],
+      ),
+      body: PageView.builder(
+        controller: _pageController,
+        itemCount: widget.photos.length,
+        onPageChanged: (index) {
+          setState(() {
+            _currentIndex = index;
+          });
+        },
+        itemBuilder: (context, index) {
+          return Center(
+            child: InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 4.0,
+              child: Image.file(
+                File(widget.photos[index].path),
+                errorBuilder: (context, error, stackTrace) {
+                  return const Center(
+                    child: Icon(Icons.error, color: Colors.white, size: 64),
+                  );
+                },
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
 }

@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
 
 part 'app_database.g.dart';
 
@@ -10,13 +12,13 @@ class CheckIns extends Table {
   @override
   String get tableName => 'check_in';
 
-  TextColumn get date => text()(); // ISO-8601 YYYY-MM-DD
+  TextColumn get checkInDate => text().named('check_in_date')(); // ISO-8601 YYYY-MM-DD
   RealColumn get weight => real().nullable()();
   RealColumn get height => real().nullable()();
   TextColumn get notes => text().nullable()();
 
   @override
-  Set<Column> get primaryKey => {date};
+  Set<Column> get primaryKey => {checkInDate};
 }
 
 class WorkoutTags extends Table {
@@ -34,7 +36,7 @@ class Workouts extends Table {
   @override
   String get tableName => 'workout';
 
-  TextColumn get checkInDate => text()(); // FK -> check_in.date
+  TextColumn get checkInDate => text()(); // FK -> check_in.check_in_date
   TextColumn get description => text().nullable()();
 
   @override
@@ -42,7 +44,7 @@ class Workouts extends Table {
 
   @override
   List<String> get customConstraints => [
-    'FOREIGN KEY (check_in_date) REFERENCES check_in(date) ON DELETE CASCADE',
+    'FOREIGN KEY (check_in_date) REFERENCES check_in(check_in_date) ON DELETE CASCADE',
   ];
 }
 
@@ -78,7 +80,7 @@ class CheckInColor extends Table {
 
   @override
   List<String> get customConstraints => [
-    'FOREIGN KEY (check_in_date) REFERENCES check_in(date) ON DELETE CASCADE',
+    'FOREIGN KEY (check_in_date) REFERENCES check_in(check_in_date) ON DELETE CASCADE',
   ];
 }
 
@@ -94,7 +96,7 @@ class CheckInPhoto extends Table {
 
   @override
   List<String> get customConstraints => [
-    'FOREIGN KEY (check_in_date) REFERENCES check_in(date) ON DELETE CASCADE',
+    'FOREIGN KEY (check_in_date) REFERENCES check_in(check_in_date) ON DELETE CASCADE',
   ];
 }
 
@@ -122,7 +124,46 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.connect(QueryExecutor e) : super(e);
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 6;
+
+  /// Helper method to create immutability triggers
+  Future<void> _createImmutabilityTriggers() async {
+    // Prevent updates/deletes on past check-ins (immutability by date)
+    await customStatement('''
+      CREATE TRIGGER IF NOT EXISTS prevent_update_old_checkin
+      BEFORE UPDATE ON check_in
+      WHEN OLD.check_in_date < date('now','localtime')
+      BEGIN
+        SELECT RAISE(ABORT, 'check-in is immutable by date');
+      END;
+    ''');
+    await customStatement('''
+      CREATE TRIGGER IF NOT EXISTS prevent_delete_old_checkin
+      BEFORE DELETE ON check_in
+      WHEN OLD.check_in_date < date('now','localtime')
+      BEGIN
+        SELECT RAISE(ABORT, 'check-in is immutable by date');
+      END;
+    ''');
+
+    // Prevent updates/deletes of emotional check-ins when they are marked immutable
+    await customStatement('''
+      CREATE TRIGGER IF NOT EXISTS prevent_update_immutable_checkin_color
+      BEFORE UPDATE ON check_in_color
+      WHEN OLD.is_immutable = 1
+      BEGIN
+        SELECT RAISE(ABORT, 'emotional check-in is immutable');
+      END;
+    ''');
+    await customStatement('''
+      CREATE TRIGGER IF NOT EXISTS prevent_delete_immutable_checkin_color
+      BEFORE DELETE ON check_in_color
+      WHEN OLD.is_immutable = 1
+      BEGIN
+        SELECT RAISE(ABORT, 'emotional check-in is immutable');
+      END;
+    ''');
+  }
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -143,42 +184,106 @@ class AppDatabase extends _$AppDatabase {
       );
 
       // Prevent updates/deletes on past check-ins (immutability by date)
-      await customStatement('''
-        CREATE TRIGGER IF NOT EXISTS prevent_update_old_checkin
-        BEFORE UPDATE ON check_in
-        WHEN date < date('now','localtime')
-        BEGIN
-          SELECT RAISE(ABORT, 'check-in is immutable by date');
-        END;
-      ''');
-      await customStatement('''
-        CREATE TRIGGER IF NOT EXISTS prevent_delete_old_checkin
-        BEFORE DELETE ON check_in
-        WHEN date < date('now','localtime')
-        BEGIN
-          SELECT RAISE(ABORT, 'check-in is immutable by date');
-        END;
-      ''');
+      // and emotional check-ins when they are marked immutable
+      await _createImmutabilityTriggers();
 
-      // Prevent updates/deletes of emotional check-ins when they are marked immutable
-      await customStatement('''
-        CREATE TRIGGER IF NOT EXISTS prevent_update_immutable_checkin_color
-        BEFORE UPDATE ON check_in_color
-        WHEN OLD.isImmutable = 1
-        BEGIN
-          SELECT RAISE(ABORT, 'emotional check-in is immutable');
-        END;
-      ''');
-      await customStatement('''
-        CREATE TRIGGER IF NOT EXISTS prevent_delete_immutable_checkin_color
-        BEFORE DELETE ON check_in_color
-        WHEN OLD.isImmutable = 1
-        BEGIN
-          SELECT RAISE(ABORT, 'emotional check-in is immutable');
-        END;
-      ''');
+      // Insert default workout tags
+      final defaultTags = ['Cardio', 'Strength', 'Hyrox', 'Yoga', 'Outdoor running'];
+      for (final tag in defaultTags) {
+        await into(workoutTags).insert(
+          WorkoutTagsCompanion.insert(tag: tag),
+          mode: InsertMode.insertOrIgnore,
+        );
+      }
     },
     onUpgrade: (Migrator m, int from, int to) async {
+      // Handle schema changes for check_in table
+      if (from < 4) {
+        // Versions < 4 cannot be migrated due to schema incompatibility,
+        // missing columns, or irrecoverable format changes. Data from these
+        // older versions is non-critical and may be lost.
+        await customStatement('DROP TABLE IF EXISTS check_in');
+      }
+      
+      // Migration from v5 to v6: Rename date column to check_in_date and fix triggers
+      if (from <= 5 && to >= 6) {
+        // First, check if the column is named 'date' or 'check_in_date'
+        // by attempting to query the schema
+        final tableInfo = await customSelect('PRAGMA table_info(check_in)').get();
+        final hasDateColumn = tableInfo.any((row) => row.data['name'] == 'date');
+        final hasCheckInDateColumn = tableInfo.any((row) => row.data['name'] == 'check_in_date');
+        
+        if (hasDateColumn && !hasCheckInDateColumn) {
+          // Column is named 'date', need to rename it
+          await customStatement('PRAGMA foreign_keys = OFF');
+          await customStatement('BEGIN TRANSACTION');
+          
+          // Create new table with correct schema
+          await customStatement('''
+            CREATE TABLE check_in_new (
+              check_in_date TEXT NOT NULL PRIMARY KEY,
+              weight REAL,
+              height REAL,
+              notes TEXT
+            )
+          ''');
+          
+          // Copy all existing data
+          await customStatement('''
+            INSERT INTO check_in_new (check_in_date, weight, height, notes)
+            SELECT date, weight, height, notes FROM check_in
+          ''');
+          
+          // Drop old table
+          await customStatement('DROP TABLE check_in');
+          
+          // Rename new table
+          await customStatement('ALTER TABLE check_in_new RENAME TO check_in');
+          
+          await customStatement('COMMIT');
+          await customStatement('PRAGMA foreign_keys = ON');
+        }
+        
+        // Drop and recreate triggers with correct WHEN clause
+        await customStatement('DROP TRIGGER IF EXISTS prevent_update_old_checkin');
+        await customStatement('DROP TRIGGER IF EXISTS prevent_delete_old_checkin');
+        
+        await customStatement('''
+          CREATE TRIGGER IF NOT EXISTS prevent_update_old_checkin
+          BEFORE UPDATE ON check_in
+          WHEN OLD.check_in_date < date('now','localtime')
+          BEGIN
+            SELECT RAISE(ABORT, 'check-in is immutable by date');
+          END;
+        ''');
+        await customStatement('''
+          CREATE TRIGGER IF NOT EXISTS prevent_delete_old_checkin
+          BEFORE DELETE ON check_in
+          WHEN OLD.check_in_date < date('now','localtime')
+          BEGIN
+            SELECT RAISE(ABORT, 'check-in is immutable by date');
+          END;
+        ''');
+      }
+      
+      // Create new tables if missing (idempotent)
+      await m.createAll();
+      // Create indexes matching the spec
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_workout_checkin ON workout(check_in_date)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_workout_workout_tag_tag ON workout_workout_tag(workout_tag_id)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_color_date_ts ON check_in_color(check_in_date, ts)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_photo_date ON check_in_photo(check_in_date)',
+      );
+
+      // Create immutability triggers
+      await _createImmutabilityTriggers();
       // Delegate to a testable method which is idempotent
       await removeLegacyTargetWeightIfPresent();
     },
@@ -215,7 +320,7 @@ class AppDatabase extends _$AppDatabase {
   Future<CheckIn?> getCheckInByDate(String date) async {
     return (select(
       checkIns,
-    )..where((t) => t.date.equals(date))).getSingleOrNull();
+    )..where((t) => t.checkInDate.equals(date))).getSingleOrNull();
   }
 
   Future<List<CheckInPhotoData>> photosForDate(String date) =>
@@ -239,8 +344,8 @@ class AppDatabase extends _$AppDatabase {
   }
 
   /// Returns whether the check-in for [dateStr] may be edited.
-  /// A check-in is immutable if it's older than today, or if an emotional
-  /// check-in for that date was stored with isImmutable = true.
+  /// A check-in is ONLY mutable if it's TODAY. Past and future dates are immutable.
+  /// Additionally, an emotional check-in for that date may mark it as immutable.
   Future<bool> isCheckInMutable(String dateStr) async {
     try {
       final parts = dateStr.split('-');
@@ -252,7 +357,9 @@ class AppDatabase extends _$AppDatabase {
       );
       final now = DateTime.now();
       final today = DateTime(now.year, now.month, now.day);
-      if (d.isBefore(today)) return false;
+      
+      // Only allow editing TODAY - block both past and future
+      if (!d.isAtSameMomentAs(today)) return false;
 
       final imm =
           await (select(checkInColor)..where(
@@ -288,8 +395,15 @@ class AppDatabase extends _$AppDatabase {
 
 LazyDatabase _openConnection() {
   return LazyDatabase(() async {
-    final file = File('trale_app_db.sqlite');
-    return NativeDatabase(file);
+    final dbFolder = await getApplicationDocumentsDirectory();
+    final file = File(p.join(dbFolder.path, 'trale_plus_v2.sqlite'));
+    return NativeDatabase(
+      file,
+      setup: (database) {
+        // Enable foreign key constraints
+        database.execute('PRAGMA foreign_keys = ON');
+      },
+    );
   });
 }
 
