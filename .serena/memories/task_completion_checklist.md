@@ -4,6 +4,8 @@ When completing a coding task, run the following to ensure quality:
 
 1. **Format code**: `dart format .`
 2. **Generate code**: `dart run build_runner build --delete-conflicting-outputs`
+   - Run from the `app/` directory if present, otherwise from the project root
+   - Can be skipped for simple UI-only changes that don't modify Drift database schema, serialization annotations, or other generated code
 3. **Run linter**: `flutter analyze`
 4. **Run tests**: `flutter test`
 5. **Build debug**: `flutter build apk --debug` (or `flutter build ios --debug` for iOS)
