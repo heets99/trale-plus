@@ -60,6 +60,7 @@ void main() {
     });
 
     test('should add emotional check-in', () async {
+      assert(driver != null, 'Driver should be initialized in setUpAll');
       // Wait for the app to settle
       await driver!.waitUntilNoTransientCallbacks();
       await Future.delayed(const Duration(seconds: 1));
