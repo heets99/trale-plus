@@ -10,6 +10,6 @@ Key features:
 - No permissions required
 - No advertising or trackers
 
-Tech stack: Flutter/Dart, with local storage using Hive and Drift(SQLite) — migration from Hive to Drift in progress (Hive: main.dart, measurement.dart, measurementDatabase.dart; Drift: app_database.dart and related modules) — charts with FlChart, and other Flutter packages.
+Tech stack: Flutter/Dart, with local storage using Hive and Drift(SQLite), charts with FlChart, and other Flutter packages. Note: Migration from Hive to Drift is in progress (Hive files: main.dart, measurement.dart, measurementDatabase.dart; Drift files: app_database.dart and related modules).
 
 The project is structured as a standard Flutter app in the `app/` directory, with Android and iOS platform code.
