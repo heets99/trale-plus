@@ -198,16 +198,14 @@ class MeasurementDatabase extends MeasurementDatabaseBaseclass {
     
     // Start a new load
     _loadCompleter = Completer<void>();
-    try {
-      await _loadMeasurementsFromDatabase();
-      _loadCompleter!.complete();
-    } catch (e) {
-      _loadCompleter!.completeError(e);
-      rethrow;
-    }
+    await _loadMeasurementsFromDatabase();
+    _loadCompleter!.complete();
   }
 
   /// Load measurements from Drift database
+  /// 
+  /// Returns normally with an empty list if the database query fails.
+  /// Errors are logged but not rethrown to maintain application stability.
   Future<void> _loadMeasurementsFromDatabase() async {
     try {
       final checkIns = await db.getAllCheckIns();
@@ -226,8 +224,8 @@ class MeasurementDatabase extends MeasurementDatabaseBaseclass {
       print('Error loading measurements from database: $e');
       // ignore: avoid_print
       print('Stack trace: $stackTrace');
+      // Return empty list on error to maintain application stability
       _measurements = <Measurement>[];
-      rethrow;
     }
   }
 
