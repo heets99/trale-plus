@@ -157,6 +157,18 @@ class MeasurementDatabase extends MeasurementDatabaseBaseclass {
 
   /// re initialize database
   void reinit() {
+    // If a load is already in progress, reuse the existing completer
+    // instead of starting a new overlapping load
+    if (_loadCompleter != null && !_loadCompleter!.isCompleted) {
+      // Load already in progress, don't start a new one
+      // Just trigger updates and return
+      MeasurementInterpolation().reinit();
+      MeasurementStats().reinit();
+      TraleNotifier().notify();
+      return;
+    }
+    
+    // No load in progress, start a new one
     _measurements = null;
     _loadCompleter = null;
 
@@ -168,7 +180,7 @@ class MeasurementDatabase extends MeasurementDatabaseBaseclass {
     MeasurementInterpolation().reinit();
     MeasurementStats().reinit();
     
-    TraleNotifier().notify;
+    TraleNotifier().notify();
   }
 
   /// Internal async initialization
