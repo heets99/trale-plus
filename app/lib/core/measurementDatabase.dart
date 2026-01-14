@@ -1,14 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:hive_ce/hive.dart';
-import 'package:hive_ce_flutter/hive_flutter.dart';
-
+import 'package:trale/core/db/app_database.dart';
 import 'package:trale/core/measurement.dart';
 import 'package:trale/core/measurementInterpolation.dart';
 import 'package:trale/core/measurementStats.dart';
 import 'package:trale/core/traleNotifier.dart';
-import 'package:trale/main.dart';
 
 /// Extend DateTime for faster comparison
 extension DateTimeExtension on DateTime {
@@ -94,7 +91,7 @@ class MeasurementDatabaseBaseclass {
   }
 }
 
-/// class providing an API to handle measurements stored in hive
+/// class providing an API to handle measurements stored in SQLite via Drift
 class MeasurementDatabase extends MeasurementDatabaseBaseclass {
   /// singleton constructor
   factory MeasurementDatabase() => _instance;
@@ -105,10 +102,12 @@ class MeasurementDatabase extends MeasurementDatabaseBaseclass {
   /// singleton instance
   static final MeasurementDatabase _instance = MeasurementDatabase._internal();
 
-  static const String _boxName = measurementBoxName;
+  /// Drift database instance
+  AppDatabase? _db;
+  AppDatabase get db => _db ??= AppDatabase();
 
-  /// get box
-  Box<Measurement> get box => Hive.box<Measurement>(_boxName);
+  /// Completer to track when measurements are loaded
+  Completer<void>? _loadCompleter;
 
   /// check if measurement exists
   bool containsMeasurement(Measurement m) {
@@ -119,94 +118,143 @@ class MeasurementDatabase extends MeasurementDatabaseBaseclass {
     return isMeasurement.contains(true);
   }
 
-  /// insert Measurements into box
+  /// Triggers a refresh of measurements after data has been persisted elsewhere.
+  /// 
+  /// NOTE: This method does NOT persist the measurement to the database.
+  /// Data persistence should be handled via app_database.dart (Drift) before
+  /// calling this method. This method only triggers a UI refresh by calling
+  /// reinit() to reload measurements from the database and update listeners.
+  /// 
+  /// Returns true to maintain backward compatibility with the existing API.
   bool insertMeasurement(Measurement m) {
-    final bool isContained = containsMeasurement(m);
-    if (!isContained) {
-      box.add(m);
-      reinit();
-    }
-    return !isContained;
+    // Data is already persisted via app_database.dart (Drift)
+    // This just triggers refresh for charts/stats
+    reinit();
+    return true;
   }
 
   /// insert a list of measurements into the box
   int insertMeasurementList(List<Measurement> ms) {
-    int count = 0;
-    for (final Measurement m in ms) {
-      final bool isContained = containsMeasurement(m);
-      if (!isContained) {
-        box.add(m);
-        count++;
-      }
-    }
-    if (count > 0) {
-      reinit();
-    }
-    return count;
+    // Data is already persisted via app_database.dart (Drift)
+    // This just triggers refresh for charts/stats
+    reinit();
+    return ms.length;
   }
 
   /// delete Measurements from box
-  void deleteMeasurement(SortedMeasurement m) {
-    box.delete(m.key);
+  void deleteMeasurement(Measurement m) {
+    // Data is already deleted via app_database.dart (Drift)
+    // This just triggers refresh for charts/stats
     reinit();
   }
 
   /// delete all Measurements from box
   Future<void> deleteAllMeasurements() async {
-    for (final SortedMeasurement m in sortedMeasurements) {
-      await box.delete(m.key);
-    }
+    // Data is already deleted via app_database.dart (Drift)
+    // This just triggers refresh for charts/stats
     reinit();
   }
 
   /// re initialize database
   void reinit() {
+    // If a load is already in progress, reuse the existing completer
+    // instead of starting a new overlapping load
+    if (_loadCompleter != null && !_loadCompleter!.isCompleted) {
+      // Load already in progress, don't start a new one
+      // Just trigger updates and return
+      MeasurementInterpolation().reinit();
+      MeasurementStats().reinit();
+      TraleNotifier().notify();
+      return;
+    }
+    
+    // No load in progress, start a new one
     _measurements = null;
-    _sortedMeasurements = null;
+    _loadCompleter = null;
 
-    // recalc all
-    init();
+    // Start async load and fire stream when done
+    _initAsync();
 
-    // update interpolation
+    // update interpolation and stats immediately
+    // (they will get updated data when measurements are loaded)
     MeasurementInterpolation().reinit();
     MeasurementStats().reinit();
+    
+    TraleNotifier().notify();
+  }
 
-    // fire stream
+  /// Internal async initialization
+  Future<void> _initAsync() async {
+    await init();
+    // fire stream only once after load completes
     fireStream();
-    TraleNotifier().notify;
   }
 
   /// initialize database
-  void init() {
-    measurements;
-    sortedMeasurements;
+  Future<void> init() async {
+    // Wait for measurements to load
+    await _ensureMeasurementsLoaded();
   }
 
   @override
   List<Measurement>? _measurements;
 
+  /// Ensure measurements are loaded, using Completer to prevent duplicate loads
+  Future<void> _ensureMeasurementsLoaded() async {
+    if (_measurements != null) return;
+    
+    // If already loading, wait for that to complete
+    if (_loadCompleter != null) {
+      return _loadCompleter!.future;
+    }
+    
+    // Start a new load
+    _loadCompleter = Completer<void>();
+    await _loadMeasurementsFromDatabase();
+    _loadCompleter!.complete();
+  }
+
+  /// Load measurements from Drift database
+  /// 
+  /// Returns normally with an empty list if the database query fails.
+  /// Errors are logged but not rethrown to maintain application stability.
+  Future<void> _loadMeasurementsFromDatabase() async {
+    try {
+      final checkIns = await db.getAllCheckIns();
+      _measurements = checkIns
+          .where((c) => c.weight != null)
+          .map((c) => Measurement(
+                date: DateTime.parse(c.checkInDate),
+                weight: c.weight!,
+                isMeasured: true,
+              ))
+          .toList()
+        ..sort((Measurement a, Measurement b) => b.compareTo(a));
+    } catch (e, stackTrace) {
+      // Log the exception and stack trace so database issues are visible
+      // ignore: avoid_print
+      print('Error loading measurements from database: $e');
+      // ignore: avoid_print
+      print('Stack trace: $stackTrace');
+      // Return empty list on error to maintain application stability
+      _measurements = <Measurement>[];
+    }
+  }
+
   /// get sorted measurements
   @override
-  List<Measurement> get measurements =>
-      _measurements ??= box.values.toList()
-        ..sort((Measurement a, Measurement b) => b.compareTo(a));
-
-  List<SortedMeasurement>? _sortedMeasurements;
-
-  /// get sorted measurements, key tuples
-  List<SortedMeasurement> get sortedMeasurements =>
-      _sortedMeasurements ??= <SortedMeasurement>[
-        for (final dynamic key in box.keys)
-          SortedMeasurement(key: key, measurement: box.get(key)!),
-      ]..sort((SortedMeasurement a, SortedMeasurement b) => b.compareTo(a));
+  List<Measurement> get measurements {
+    // Return current measurements or empty list if not loaded yet
+    return _measurements ?? <Measurement>[];
+  }
 
   /// date of latest measurement
   @override
-  DateTime get lastDate => sortedMeasurements.first.measurement.date;
+  DateTime get lastDate => measurements.isNotEmpty ? measurements.first.date : DateTime.now();
 
   /// date of first measurement
   @override
-  DateTime get firstDate => sortedMeasurements.last.measurement.date;
+  DateTime get firstDate => measurements.isNotEmpty ? measurements.last.date : DateTime.now();
 
   /// return string for export
   String get exportString {
