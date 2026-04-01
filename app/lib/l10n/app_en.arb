@@ -741,5 +741,121 @@
     "dailyCheckInSubtitle": "Log your daily measurements",
     "@dailyCheckInSubtitle": {
         "description": "Subtitle for daily check-in"
+    },
+    "measurementsSection": "Measurements",
+    "@measurementsSection": {
+        "description": "Section title for measurements in daily check-in"
+    },
+    "height": "Height",
+    "@height": {
+        "description": "Height field"
+    },
+    "neck": "Neck",
+    "@neck": {
+        "description": "Neck circumference"
+    },
+    "waist": "Waist",
+    "@waist": {
+        "description": "Waist circumference"
+    },
+    "bmi": "BMI",
+    "@bmi": {
+        "description": "Body Mass Index"
+    },
+    "bodyFat": "Body Fat %",
+    "@bodyFat": {
+        "description": "Body fat percentage"
+    },
+    "photosSection": "Photos",
+    "@photosSection": {
+        "description": "Section title for photos in daily check-in"
+    },
+    "takePhoto": "Take Photo",
+    "@takePhoto": {
+        "description": "Button to take a photo"
+    },
+    "maxPhotosReached": "Maximum 3 photos allowed",
+    "@maxPhotosReached": {
+        "description": "Message when max photos reached"
+    },
+    "thoughtsSection": "Thoughts",
+    "@thoughtsSection": {
+        "description": "Section title for thoughts in daily check-in"
+    },
+    "thoughtsPlaceholder": "How are you feeling today?",
+    "@thoughtsPlaceholder": {
+        "description": "Placeholder for thoughts text field"
+    },
+    "workoutSection": "Workout",
+    "@workoutSection": {
+        "description": "Section title for workout in daily check-in"
+    },
+    "addWorkout": "Add Workout",
+    "@addWorkout": {
+        "description": "Button to add a workout entry"
+    },
+    "workoutType": "Type",
+    "@workoutType": {
+        "description": "Workout type column header"
+    },
+    "setMeasure": "Measure",
+    "@setMeasure": {
+        "description": "Set measure column header"
+    },
+    "reps": "Reps",
+    "@reps": {
+        "description": "Reps column header"
+    },
+    "sets": "Sets",
+    "@sets": {
+        "description": "Sets column header"
+    },
+    "indoorOutdoor": "In/Out",
+    "@indoorOutdoor": {
+        "description": "Indoor/Outdoor column header"
+    },
+    "workoutDuration": "Total Duration",
+    "@workoutDuration": {
+        "description": "Total workout duration"
+    },
+    "minutes": "min",
+    "@minutes": {
+        "description": "Minutes abbreviation"
+    },
+    "outdoor": "Outdoor",
+    "@outdoor": {
+        "description": "Outdoor label"
+    },
+    "indoor": "Indoor",
+    "@indoor": {
+        "description": "Indoor label"
+    },
+    "manageWorkoutTypes": "Manage Workout Types",
+    "@manageWorkoutTypes": {
+        "description": "Settings option for workout types"
+    },
+    "addWorkoutType": "Add Workout Type",
+    "@addWorkoutType": {
+        "description": "Dialog to add workout type"
+    },
+    "enterWorkoutType": "Enter workout type name",
+    "@enterWorkoutType": {
+        "description": "Hint for workout type input"
+    },
+    "checkInCompleted": "Daily check-in completed",
+    "@checkInCompleted": {
+        "description": "Message when check-in is completed and immutable"
+    },
+    "checkInImmutable": "Cannot modify past day's check-in",
+    "@checkInImmutable": {
+        "description": "Message when trying to edit immutable check-in"
+    },
+    "saveCheckIn": "Save Check-In",
+    "@saveCheckIn": {
+        "description": "Button to save daily check-in"
+    },
+    "completeCheckIn": "Complete Check-In",
+    "@completeCheckIn": {
+        "description": "Button to mark check-in as complete"
     }
 }

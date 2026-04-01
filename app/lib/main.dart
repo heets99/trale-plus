@@ -5,6 +5,8 @@ import 'package:hive_ce_flutter/hive_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 
+import 'package:trale/core/daily_checkin.dart';
+import 'package:trale/core/daily_checkin_database.dart';
 import 'package:trale/core/firstDayLocalizationsDelegate.dart';
 import 'package:trale/core/measurement.dart';
 import 'package:trale/core/notificationService.dart';
@@ -26,7 +28,11 @@ Future<void> main() async {
 
   await Hive.initFlutter();
   Hive.registerAdapter<Measurement>(MeasurementAdapter());
+  Hive.registerAdapter<DailyCheckIn>(DailyCheckInAdapter());
+  Hive.registerAdapter<WorkoutEntry>(WorkoutEntryAdapter());
   await Hive.openBox<Measurement>(measurementBoxName);
+  await Hive.openBox<DailyCheckIn>(dailyCheckInBoxName);
+  await Hive.openBox<String>(workoutTypesBoxName);
 
   // Initialise the notification service.
   final NotificationService notificationService = NotificationService();
