@@ -252,7 +252,7 @@
     "@loading": {
         "description": "loading"
     },
-    "measurements": "Measurements",
+    "measurements": "Daily Check-In",
     "@measurements": {
         "description": "measurements"
     },
@@ -298,7 +298,7 @@
             }
         }
     },
-    "addWeight": "Enter your weight",
+    "addWeight": "Daily Check-In",
     "@addWeight": {
         "description": "Enter your weight"
     },
@@ -733,5 +733,13 @@
     "reminderNotificationBody": "You haven't logged your weight today yet.",
     "@reminderNotificationBody": {
         "description": "Body text of the reminder notification"
+    },
+    "dailyCheckIn": "Daily Check-In",
+    "@dailyCheckIn": {
+        "description": "Title for daily check-in"
+    },
+    "dailyCheckInSubtitle": "Log your daily measurements",
+    "@dailyCheckInSubtitle": {
+        "description": "Subtitle for daily check-in"
     }
 }

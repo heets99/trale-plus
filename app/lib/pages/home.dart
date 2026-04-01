@@ -133,7 +133,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       NavigationDestination(
         icon: PPIcon(PhosphorIconsDuotone.archive, context),
         selectedIcon: PPIcon(PhosphorIconsFill.archive, context),
-        label: AppLocalizations.of(context)!.measurements,
+        label: AppLocalizations.of(context)!.dailyCheckIn,
       ),
     ];
 
