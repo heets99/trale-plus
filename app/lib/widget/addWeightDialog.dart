@@ -34,7 +34,8 @@ Future<bool> showAddWeightDialog({
   final double initialSliderValue = weight.toDouble() / notifier.unit.scaling;
   double currentSliderValue = initialSliderValue;
   final DateTime initialDate = date;
-  DateTime currentDate = initialDate;
+  // Use current time only - no past/future date selection allowed
+  DateTime currentDate = DateTime.now();
   final MeasurementDatabase database = MeasurementDatabase();
 
   final Widget content = StatefulBuilder(
@@ -55,6 +56,7 @@ Future<bool> showAddWeightDialog({
             ),
           WidgetGroup(
             children: <Widget>[
+              // Date and time are fixed to current time - no editing allowed
               GroupedListTile(
                 color: Theme.of(context).colorScheme.surfaceContainerLow,
                 leading: PPIcon(PhosphorIconsDuotone.calendar, context),
@@ -63,49 +65,6 @@ Future<bool> showAddWeightDialog({
                   notifier.dateFormat(context).format(currentDate),
                   style: Theme.of(context).textTheme.bodyLarge,
                 ),
-                onTap: () async {
-                  final TimeOfDay currentTime = TimeOfDay.fromDateTime(
-                    currentDate,
-                  );
-                  final DateTime? selectedDate = await showDatePicker(
-                    context: context,
-                    initialDate: currentDate,
-                    firstDate: DateTime.fromMillisecondsSinceEpoch(0),
-                    lastDate: DateTime.now(),
-                  );
-
-                  if (selectedDate == null) {
-                    return;
-                  }
-
-                  currentDate = DateTime(
-                    selectedDate.year,
-                    selectedDate.month,
-                    selectedDate.day,
-                    currentTime.hour,
-                    currentTime.minute,
-                  );
-
-                  if (!context.mounted) {
-                    return;
-                  }
-                  final TimeOfDay? time = await showTimePicker(
-                    context: context,
-                    initialTime: TimeOfDay.fromDateTime(currentDate),
-                  );
-
-                  if (time == null) {
-                    return;
-                  }
-                  currentDate = DateTime(
-                    currentDate.year,
-                    currentDate.month,
-                    currentDate.day,
-                    time.hour,
-                    time.minute,
-                  );
-                  setState(() {});
-                },
               ),
               GroupedListTile(
                 color: Theme.of(context).colorScheme.surfaceContainerLow,
@@ -115,24 +74,6 @@ Future<bool> showAddWeightDialog({
                   DateFormat.Hm().format(currentDate),
                   style: Theme.of(context).textTheme.bodyLarge,
                 ),
-                onTap: () async {
-                  final TimeOfDay? time = await showTimePicker(
-                    context: context,
-                    initialTime: TimeOfDay.fromDateTime(currentDate),
-                  );
-
-                  if (time == null) {
-                    return;
-                  }
-                  currentDate = DateTime(
-                    currentDate.year,
-                    currentDate.month,
-                    currentDate.day,
-                    time.hour,
-                    time.minute,
-                  );
-                  setState(() {});
-                },
               ),
             ],
           ),
