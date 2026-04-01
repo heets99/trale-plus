@@ -37,7 +37,7 @@ android {
     }
 
     defaultConfig {
-        applicationId "de.quantumphysique.trale"
+        applicationId "com.heets.trale-plus"
         minSdkVersion flutter.minSdkVersion
         targetSdkVersion 36
         versionCode flutterVersionCode.toInteger()
@@ -95,7 +95,7 @@ android {
     kotlinOptions {
         jvmTarget = '17'
     }
-    namespace 'de.quantumphysique.trale'
+    namespace 'com.heets.trale_plus'
 }
 
 flutter {
